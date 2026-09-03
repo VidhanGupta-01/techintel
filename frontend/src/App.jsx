@@ -3,6 +3,8 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { BrainCircuit, LineChart, FileText, Activity, Search, Sparkles } from 'lucide-react';
 import './index.css';
 
+const API_BASE = 'https://techintel-gccfaaatckcrgha4.austriaeast-01.azurewebsites.net';
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [overview, setOverview] = useState(null);
@@ -19,9 +21,9 @@ export default function App() {
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
-        let url = 'http://localhost:8000/api/overview';
+        let url = `${API_BASE}/api/overview`;
         if (searchQuery.trim() !== '') {
-          url = `http://localhost:8000/api/search?q=${encodeURIComponent(searchQuery)}`;
+          url = `${API_BASE}/api/search?q=${encodeURIComponent(searchQuery)}`;
         }
         
         const res = await fetch(url);
@@ -51,8 +53,8 @@ export default function App() {
     const fetchStaticData = async () => {
       try {
         const [scurveRes, patentsRes] = await Promise.all([
-          fetch('http://localhost:8000/api/scurve'),
-          fetch('http://localhost:8000/api/patents')
+          fetch(`${API_BASE}/api/scurve`),
+          fetch(`${API_BASE}/api/patents`)
         ]);
         
         const scurveRaw = await scurveRes.json();
@@ -78,7 +80,7 @@ export default function App() {
     setGenerating(true);
     setInsight('');
     try {
-      const url = `http://localhost:8000/api/generate-insight?q=${encodeURIComponent(searchQuery)}`;
+      const url = `${API_BASE}/api/generate-insight?q=${encodeURIComponent(searchQuery)}`;
       const res = await fetch(url);
       const data = await res.json();
       
