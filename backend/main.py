@@ -1,6 +1,7 @@
 import os
 import json
 
+import numpy as np
 from fastapi import FastAPI, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -27,6 +28,21 @@ app.add_middleware(
 # OpenAI client. Reads OPENAI_API_KEY from the environment automatically.
 openai_client = OpenAI() if os.environ.get("OPENAI_API_KEY") else None
 OPENAI_MODEL = "gpt-4o-mini"  # cheap + fast; swap to "gpt-4o" for higher quality
+EMBED_MODEL = "text-embedding-3-small"
+
+# Load precomputed embeddings (built offline by embed_data.py) if the file exists.
+# We don't embed on every request -- that would be slow and wasteful. Instead we
+# embed the DB once, cache it to disk, and only embed the user's live query at
+# search time (one cheap call) to compare against the cache.
+_EMBEDDINGS_CACHE = {"patents": {}, "publications": {}}
+if os.path.exists("embeddings_cache.json"):
+    with open("embeddings_cache.json") as f:
+        _EMBEDDINGS_CACHE = json.load(f)
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    a, b = np.array(a), np.array(b)
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 
 # Dependency to get the DB session
@@ -94,6 +110,56 @@ def search_technologies(q: str = Query(..., description="Search keyword"), db: S
             "active_sectors": active_sectors
         }
     }
+
+
+@app.get("/api/semantic-search")
+def semantic_search(q: str = Query(..., description="Natural language query"), top_k: int = 5, db: Session = Depends(get_db)):
+    """
+    Meaning-based search: finds patents/publications related in MEANING to the
+    query, even if they share no keywords. Complements /api/search (exact
+    keyword match) rather than replacing it -- e.g. searching "AI safety risk"
+    can surface an abstract about "mitigating unintended model behavior" that
+    keyword search would miss entirely.
+    """
+    if not _EMBEDDINGS_CACHE["patents"] and not _EMBEDDINGS_CACHE["publications"]:
+        return {
+            "error": "No embeddings cache found. Run `python embed_data.py` once to build it first.",
+            "results": []
+        }
+
+    if openai_client is None:
+        return {"error": "OPENAI_API_KEY is not set.", "results": []}
+
+    try:
+        query_embedding = openai_client.embeddings.create(model=EMBED_MODEL, input=q).data[0].embedding
+    except Exception as e:
+        return {"error": f"Embedding the query failed ({type(e).__name__}).", "results": []}
+
+    scored = []
+    for pid, vec in _EMBEDDINGS_CACHE["patents"].items():
+        scored.append(("patent", pid, _cosine_similarity(query_embedding, vec)))
+    for pubid, vec in _EMBEDDINGS_CACHE["publications"].items():
+        scored.append(("publication", pubid, _cosine_similarity(query_embedding, vec)))
+
+    scored.sort(key=lambda x: x[2], reverse=True)
+    top_matches = scored[:top_k]
+
+    results = []
+    for kind, item_id, score in top_matches:
+        if kind == "patent":
+            record = db.query(Patent).filter(Patent.id == item_id).first()
+        else:
+            record = db.query(Publication).filter(Publication.id == item_id).first()
+        if record:
+            results.append({
+                "type": kind,
+                "title": record.title,
+                "category": record.category,
+                "date": record.date,
+                "similarity": round(score, 3)
+            })
+
+    return {"results": results}
 
 
 def _rule_based_fallback(topic: str, total_patents: int, avg_trl: float) -> dict:
